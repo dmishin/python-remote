@@ -25,16 +25,20 @@ class ClientThread( threading.Thread ):
 
     def run( self ):
         fl = self.socket.makefile()
+
+        def respond( message ):
+            pickle.dump( message, fl )
+            fl.flush()
+
         try:
             while True:
                 msg = pickle.load( fl )
-                #print "##RCV:", msg
-                if msg == None:
+                if msg[0] == MSG_BYE:
                     print "Close request"
                     break
 
                 if msg[0] == MSG_STOP_SERVER:
-                    pickle.dump( None, fl )
+                    respond( (RESP_SUCCESS, ) )
                     fl.close()
                     self.socket.close()
                     self.python_server.stop_requested = True
@@ -42,15 +46,12 @@ class ClientThread( threading.Thread ):
 
                 assert (isinstance( msg, tuple ) )
                 try:
-                    resp = self.handlers[ msg[0] ]( msg )
+                    respond( self.handlers[ msg[0] ]( msg ) )
                 except KeyError, key:
-                    resp = None
-                    print "Unknownw message: %s"%key
-                #print "RSP:", resp, "\n"
-                pickle.dump( resp, fl )
-                fl.flush()
+                    respond( (RESP_EXCEPT, ValueError( "Unknown message:%s"%key ) ) )
+                    print "Unknown message: %s"%key
         except Exception, err:
-            print "Exception occured while communcating with server:%s"%err
+            print "Exception occured while communcating with client:%s"%err
 
         try:
             fl.close()
@@ -71,7 +72,7 @@ class RemoteObjectWrapper:
         return "REMOTE(%s)"%self.remote_id
 
 class PythonServer:
-    def __init__( self, port, are_lists_local=False ):
+    def __init__( self, port, are_lists_local=False, multithread = False ):
         """Create python server on teh specified port
         are_lists_local: When True, lists will be transferred to the client. Othervise, they will be externalized. True is safe only if lists are never modified on the server side.
         """
@@ -79,6 +80,7 @@ class PythonServer:
         self.objects = dict() #Map id->remoted object
         self.will_wrap_lists = are_lists_local
         self.stop_requested = False
+        self.multithread = multithread
 
     def start( self ):
         #create an INET, STREAMing socket
@@ -99,7 +101,11 @@ class PythonServer:
             #now do something with the clientsocket
             #in this case, we'll pretend this is a threaded server
             ct = ClientThread( self, clientsocket, address )
-            ct.start()
+            if self.multithread:
+                st.start()
+            else:
+                ct.run()
+                ct = None
 
     def register_object( self, obj ):
         obj_id = id( obj )
@@ -173,6 +179,7 @@ class PythonServer:
         args = self.unwrap_argument( args )
         try:
             obj = self.objects[ obj_id ]
+            #print "###OBJ:", obj
             try:
                 res = self.wrap_returned( obj( *args ) )
                 return (RESP_SUCCESS, res)
@@ -232,16 +239,19 @@ class PythonServer:
 
 
 class RemoteObject:
-    def __init__(self, far_side, remote_id ):
+    def __init__(self, far_side, remote_id, name=None ):
         """Wrapper, representing remote object"""
         self.__dict__[ "far_side" ] = far_side
         self.__dict__[ "remote_id"] = remote_id
+        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id % 1000)
 
     def __getattr__(self, name ):
         attr = self.far_side.get_attribute( self, name )
         #Caching of the special attributes to increase performance
         if name.startswith("__") and name.endswith("__"):
             self.__dict__[ name ] = attr
+        if isinstance( attr, RemoteObject ):
+            attr.__dict__[ "_remote_name_" ] = self._remote_name_ + "." + name
         return attr
 
     def __setattr__(self, name, value ):
@@ -249,13 +259,20 @@ class RemoteObject:
 
     def __del__(self):
         try:
-            self.far_side.release_object( self )
+            if self.remote_id != None: #If it is not disconnected object
+                self.far_side.release_object( self )
         except Exception, err:
             print "Object %d can't be released: %s"%(self.remote_id, err)
 
     def __call__(self, *args):
         """For functions, performs call"""
+        #print "#CALL", self._remote_name_, args
         return self.far_side.call_object( self, args )
+
+    def _release_remote_( self ):
+        """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
+        self.far_side.release_object( self )
+        self.__dict__[ "remote_id" ] = None #Mark object as disconnected.
 
 class FarSide:
     def __init__(self, host, port ):
@@ -271,10 +288,16 @@ class FarSide:
             socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect( (self.host, self.port) )
         self.file = self.socket.makefile()
+
+
+    def disconnect_objects( self ):
+        """Disconnects all objects, assotiated with this farside"""
+        for obj in self.objects.values():
+            obj._release_remote_()
         
     def close( self ):
         if self.file:
-            pickle.dump( None, self.file ) #Say bye to the server
+            pickle.dump( (MSG_BYE, ), self.file ) #Say bye to the server
             self.file.close()
             self.file = None
         if self.socket:
@@ -282,12 +305,14 @@ class FarSide:
             self.socket = None
 
     def stop_server( self ):
+        self.disconnect_objects()
         resp = self._message( (MSG_STOP_SERVER, ) )
         self.close()
         
     def __del__(self):
         if self.file:
             try:
+                self.disconnect_objects() #Mark all objects, assotiated with this connection as invalid.
                 self.close()
             except Exception, err:
                 print "Warning: Error closing conenction ignored: %s"%err
@@ -340,7 +365,6 @@ class FarSide:
         #TODO: process object attributes too?
         return value
 
-
     def release_object( self, obj_wrapper ):
         """Releases a remote object"""
         #MSG_RELEASE_OBJECT = 5
@@ -348,8 +372,7 @@ class FarSide:
         assert( isinstance( obj_wrapper, RemoteObject ) )
         resp = self._message( (MSG_RELEASE_OBJECT, obj_wrapper.remote_id ) )
         if resp[0] == RESP_NOT_REGISTERED:
-            print "Warning! Object with remote id %d was not registered at the server"%(resp[1])
-            
+            raise UnknownObjectError, resp[1]
 
     def get_attribute( self, object_wrapper, attr_name ):
         """Returns wrapped attrobute of the object
@@ -377,13 +400,13 @@ class FarSide:
         if resp[0] == RESP_NOT_REGISTERED:
             raise UnknownObjectError, resp[1]
         
-    def get_wrapper( self, remote_id ):
+    def get_wrapper( self, remote_id, remote_name=None ):
         """Returns wrapper for the given remote ID
         """
         try:
             return self.objects[ remote_id ]
         except KeyError:
-            wrapper = RemoteObject( self, remote_id )
+            wrapper = RemoteObject( self, remote_id, remote_name )
             self.objects[ remote_id ] = wrapper
             return wrapper
 
@@ -391,7 +414,7 @@ class FarSide:
         assert( isinstance( mod_name, str ) )
         resp = self._message( (MSG_IMPORT_MODULE, mod_name) )
         if resp[0] == RESP_SUCCESS:
-            return self.get_wrapper( resp[1] )
+            return self.get_wrapper( resp[1], mod_name )
         elif resp[0] == RESP_EXCEPT:
             raise resp[1]
 
@@ -446,9 +469,9 @@ MSG_GET_GLOBALS = 1
 
 MSG_CALL = 2
 #>(msg, obj_id, args)
-#<(True, ans)
-#<(False, None) - no __call__ support
-#<(False, err) - exception occured
+#<(status-success, ans)
+#<(statue-nocall, None) - no __call__ support
+#<(status-except, err) - exception occured
 
 MSG_SET_ATTRIBUTE = 3
 #>(msg, obj_id, attr_name, attr_value)
@@ -468,6 +491,8 @@ MSG_GET_ATTR_LIST = 6
 #<(resp-false)
 
 MSG_STOP_SERVER = 7
+MSG_BYE = -1 #Said by the client, before quit
+
 
 RESP_SUCCESS = 0
 RESP_EXCEPT = 1 #partial_success
