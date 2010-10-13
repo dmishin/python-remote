@@ -8,7 +8,12 @@ class UnknownObjectError( Exception ):
     """Error, raised when requested object is not known at the far side"""
     pass
 
-class ClientThread( threading.Thread ):
+class ProtocolException( Exception ):
+    """Raised, when unexpected or incorrect message received by client or by server.
+    Usually caused either by the errors i nthe code, or by network errors"""
+    pass
+
+class ServerThread( threading.Thread ):
     def __init__( self, python_server, socket, address ):
         threading.Thread.__init__( self )
         self.socket = socket
@@ -32,18 +37,20 @@ class ClientThread( threading.Thread ):
         try:
             while True:
                 msg = pickle.load( fl )
-                if msg[0] == MSG_BYE:
+                assert (isinstance( msg, tuple ) )
+                msg_code = msg[0]
+
+                if msg_code == MSG_BYE:
                     print "Close request"
                     break
 
-                if msg[0] == MSG_STOP_SERVER:
+                if msg_code == MSG_STOP_SERVER:
                     respond( (RESP_SUCCESS, ) )
                     fl.close()
                     self.socket.close()
                     self.python_server.stop_requested = True
                     break
 
-                assert (isinstance( msg, tuple ) )
                 try:
                     respond( self.handlers[ msg[0] ]( msg ) )
                 except KeyError, key:
@@ -80,6 +87,7 @@ class PythonServer:
         self.will_wrap_lists = are_lists_local
         self.stop_requested = False
         self.multithread = multithread
+        self.logger = logging.getLogger( "py-remote.server" )
 
     def start( self ):
         #create an INET, STREAMing socket
@@ -96,10 +104,10 @@ class PythonServer:
         while not self.stop_requested:
             #accept connections from outside
             (clientsocket, address) = serversocket.accept()
-            print "Accepted connection from:", address
+            self.logger.info( "Accepted connection from: %s"%str( address ) )
             #now do something with the clientsocket
             #in this case, we'll pretend this is a threaded server
-            ct = ClientThread( self, clientsocket, address )
+            ct = ServerThread( self, clientsocket, address )
             if self.multithread:
                 st.start()
             else:
@@ -107,6 +115,7 @@ class PythonServer:
                 ct = None
 
     def register_object( self, obj ):
+        """Stores reference to the object in the internal map and returns object ID, that would be used as remote ID by the client"""
         obj_id = id( obj )
         self.objects[ obj_id ] = obj
         return obj_id
@@ -141,11 +150,11 @@ class PythonServer:
             try:
                 return self.objects[ value.remote_id ]
             except KeyError,err:
-                print "Can't unwrap argument: object %s not registered"%err
-                return None
+                self.logger.error( "Can't unwrap argument: object %s not registered"%err )
+                raise UnknownObjectError, err
 
         #Unsafe conversions
-        #print "Warning: Argument can not be converted safely"
+        #self.logger.warning( "Warning: Argument can not be converted safely" )
         if isinstance( value, list ):
             return map( self.unwrap_argument, value )
         if isinstance( value, set ):
@@ -157,6 +166,7 @@ class PythonServer:
 
 
     def on_get_globals( self, msg ):
+        """Handler for the get_globals message. Retuns wrapper for the globals map. Not really usable."""
         obj_id = self.register_object( globals() )
         return obj_id
 
@@ -173,12 +183,13 @@ class PythonServer:
             return (RESP_NOT_REGISTERED, obj_id)
 
     def on_call( self, msg ):
+        """Called object as function"""
         msg_id, obj_id, args = msg
-        #print "###CALL:",obj_id, args
+#        print( "###CALL: %s %s"%( obj_id, args ) )
         args = self.unwrap_argument( args )
         try:
             obj = self.objects[ obj_id ]
-            #print "###OBJ:", obj
+            #self.logger.debug( "###OBJ: %s"%obj )
             try:
                 res = self.wrap_returned( obj( *args ) )
                 return (RESP_SUCCESS, res)
@@ -188,10 +199,11 @@ class PythonServer:
                 #Remote exception - its OK
                 return (RESP_EXCEPT, err)
         except KeyError, err:
-            print "Error! No object %s"%obj_id
+            self.logger.error( "Error! No object %s"%obj_id )
             return (RESP_NOT_REGISTERED, obj_id)
 
     def on_set_attr( self, msg ):
+        """Attempt to set attribute"""
         msg_id, obj_id, attr_name, attr_val = msg
         attr_val = self.unwrap_argument( attr_val )
         try:
@@ -200,7 +212,7 @@ class PythonServer:
                 setattr( obj, attr_name, attr_val )
                 return (RESP_SUCCESS, )
             except Exception, err:
-                print "Faield to set attribute %s to %s"%(attr_name, attr_val )
+                self.logger.error( "Faield to set attribute %s to %s"%(attr_name, attr_val ) )
                 return (RESP_EXCEPT, err)
         except KeyError:
             return (RESP_NOT_REGISTERED, obj_id)
@@ -215,6 +227,7 @@ class PythonServer:
             return (RESP_EXCEPT, err )
 
     def on_release_object( self, msg ):
+        """Client says that the object is no more needed."""
         #MSG_RELEASE_OBJECT = 5
         #>(msg, obj_id )
         #<(resp-true)
@@ -222,7 +235,7 @@ class PythonServer:
         msg_id, obj_id = msg
         try:
             del self.objects[ obj_id ]
-            #print "Released object %d"%(obj_id)
+            #self.logger.debug( "Released object %d"%(obj_id)
             return (RESP_SUCCESS, )
         except KeyError:
             return (RESP_NOT_REGISTERED, obj_id)
@@ -241,8 +254,8 @@ class RemoteObject:
     def __init__(self, far_side, remote_id, name=None ):
         """Wrapper, representing remote object"""
         self.__dict__[ "far_side" ] = far_side
-        self.__dict__[ "remote_id"] = remote_id
-        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id % 1000)
+        self.__dict__[ "_remote_id_"] = remote_id
+        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id)
 
     def __getattr__(self, name ):
         attr = self.far_side.get_attribute( self, name )
@@ -259,10 +272,10 @@ class RemoteObject:
 
     def __del__(self):
         try:
-            if self.remote_id != None: #If it is not disconnected object
+            if self._remote_id_ != None: #If it is not disconnected object
                 self.far_side.release_object( self )
         except Exception, err:
-            print "Object %d can't be released: %s"%(self.remote_id, err)
+            print "Object %d can't be released: %s"%(self._remote_id_, err)
 
     def __call__(self, *args):
         """For functions, performs call"""
@@ -272,10 +285,12 @@ class RemoteObject:
     def _release_remote_( self ):
         """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
         self.far_side.release_object( self )
-        self.__dict__[ "remote_id" ] = None #Mark object as disconnected.
+        self.__dict__[ "_remote_id_" ] = None #Mark object as disconnected.
+
 
 class FarSide:
-    def __init__(self, host, port, cache_all_attributes=False ):
+    """Client object"""
+    def __init__(self, host, port, cache_all_attributes=False, connect=True ):
         self.host = host
         self.port = port
         self.objects = weakref.WeakValueDictionary() #Maps remoteID->local wrapper.
@@ -283,6 +298,7 @@ class FarSide:
         self.socket = None
         self.msg_counter = 0
         self.cache_all_attributes = cache_all_attributes
+        if connect: self.connect()
 
     def connect( self ):
         #create an INET, STREAMing socket
@@ -292,6 +308,7 @@ class FarSide:
         self.file = self.socket.makefile()
 
     def get_msg_counter( self ):
+        """Returns total number of the messages, passed between server and client"""
         return self.msg_counter
 
     def disconnect_objects( self ):
@@ -304,17 +321,19 @@ class FarSide:
             pickle.dump( (MSG_BYE, ), self.file, pickle.HIGHEST_PROTOCOL ) #Say bye to the server
             self.file.close()
             self.file = None
-        if self.socket:
             self.socket.close()
             self.socket = None
+        else:
+            raise ValueError, "Client already closed connection!"
 
     def stop_server( self ):
+        """Closes connection and requests server to stop"""
         self.disconnect_objects()
         resp = self._message( (MSG_STOP_SERVER, ) )
         self.close()
         
     def __del__(self):
-        if self.file:
+        if self.file: #If not yet disconnected
             try:
                 self.disconnect_objects() #Mark all objects, assotiated with this connection as invalid.
                 self.close()
@@ -326,7 +345,7 @@ class FarSide:
         self.msg_counter += 1
         pickle.dump( message, self.file, pickle.HIGHEST_PROTOCOL )
         self.file.flush()
-        return pickle.load( self.file)
+        return pickle.load( self.file )
 
     def globals( self ):
         """Returns wrapped globals array"""
@@ -358,7 +377,7 @@ class FarSide:
         if isinstance( value, tuple ):
             return tuple( map( self.wrap_argument, value ) )
         if isinstance( value, RemoteObject ):
-            return RemoteObjectWrapper( value.remote_id )
+            return RemoteObjectWrapper( value._remote_id_ )
         #Unsafe conversions
         #print "Warning: Argument can not be converted safely"
         if isinstance( value, list ):
@@ -375,7 +394,7 @@ class FarSide:
         #MSG_RELEASE_OBJECT = 5
         #>(msg, obj_id )
         assert( isinstance( obj_wrapper, RemoteObject ) )
-        resp = self._message( (MSG_RELEASE_OBJECT, obj_wrapper.remote_id ) )
+        resp = self._message( (MSG_RELEASE_OBJECT, obj_wrapper._remote_id_ ) )
         if resp[0] == RESP_NOT_REGISTERED:
             raise UnknownObjectError, resp[1]
 
@@ -384,25 +403,26 @@ class FarSide:
         """
         assert( isinstance( object_wrapper, RemoteObject ) )
         resp = self._message( (MSG_GET_ATTRIBUTE, 
-                               object_wrapper.remote_id, 
+                               object_wrapper._remote_id_, 
                                attr_name ) )
-        if resp[0] == RESP_SUCCESS:
+        resp_code = resp[0]
+        if resp_code == RESP_SUCCESS:
             return self.unwrap_returned( resp[1] ) #resp is a remote ID
-
-        if resp[0] == RESP_NO_SUCH_ATTR: #Remote object do not have such ID
+        if resp_code == RESP_NO_SUCH_ATTR: #Remote object do not have such ID
             raise AttributeError, attr_name
-        if resp[0] == RESP_NOT_REGISTERED: #Remote object do not have such ID
+        if resp_code == RESP_NOT_REGISTERED: #Remote object do not have such ID
             raise UnknownObjectError, resp[1]
 
     def set_attribute( self, remote_obj, attr_name, attr_value ):
         assert( isinstance( remote_obj, RemoteObject ) )
         resp = self._message( (MSG_SET_ATTRIBUTE,
-                               remote_obj.remote_id,
+                               remote_obj._remote_id_,
                                attr_name,
                                self.wrap_argument( attr_value ) ) ) #TODO sanitize value
-        if resp[0] == RESP_EXCEPT:
+        resp_code = resp[0]
+        if resp_code == RESP_EXCEPT:
             raise resp[1]
-        if resp[0] == RESP_NOT_REGISTERED:
+        if resp_code == RESP_NOT_REGISTERED:
             raise UnknownObjectError, resp[1]
         
     def get_wrapper( self, remote_id, remote_name=None ):
@@ -416,39 +436,51 @@ class FarSide:
             return wrapper
 
     def import_module( self, mod_name ):
+        """Imports module at the remote side, and returns a proxy object for that module"""
         assert( isinstance( mod_name, str ) )
         resp = self._message( (MSG_IMPORT_MODULE, mod_name) )
-        if resp[0] == RESP_SUCCESS:
+        resp_code = resp[0]
+        if resp_code == RESP_SUCCESS:
             return self.get_wrapper( resp[1], mod_name )
-        elif resp[0] == RESP_EXCEPT:
+        elif resp_code == RESP_EXCEPT:
             raise resp[1]
+        else:
+            raise ProtocolException, "Unexpected responce:%s"%(str(resp))
 
     def dir( self, object_wrapper ):
+        """Calls  dir() at the remote side and returns resulted list"""
         assert( isinstance( object_wrapper, RemoteObject ) )
-        resp = self._message( (MSG_GET_ATTR_LIST, object_wrapper.remote_id ) )
-        if resp[0] == RESP_SUCCESS:
+        resp = self._message( (MSG_GET_ATTR_LIST, object_wrapper._remote_id_ ) )
+        resp_code = resp[0]
+        if resp_code == RESP_SUCCESS:
             return resp[1]
-        elif resp[1] == RESP_NOT_REGISTERED:
+        elif resp_code == RESP_NOT_REGISTERED:
             raise UnknownObjectError, resp[1]
+        else:
+            raise ProtocolException, "Unexpected responce:%s"%(str(resp))
 
     def call_object( self, remote_obj, args ):
         """Calls remote obvject"""
         assert( isinstance( remote_obj, RemoteObject) )
-        assert( remote_obj.remote_id in self.objects )
+        assert( remote_obj._remote_id_ in self.objects )
         args = self.wrap_argument( args )
         resp = self._message( (MSG_CALL,
-                               remote_obj.remote_id,
+                               remote_obj._remote_id_,
                                args ) )
-        if resp[0] == RESP_SUCCESS:
+        resp_code = resp[0]
+        if resp_code == RESP_SUCCESS:
             return self.unwrap_returned( resp[1] ) #todo: sanitize
-        elif resp[0] == RESP_NOT_REGISTERED:
+        elif resp_code == RESP_NOT_REGISTERED:
             raise UnknownObjectError, resp[1]
-        elif resp[0] == RESP_EXCEPT:
+        elif resp_code == RESP_EXCEPT:
             raise resp[1]
-        elif resp[0] == RESP_NO_SUCH_ATTR:
+        elif resp_code == RESP_NO_SUCH_ATTR:
             raise AttributeError, "__call__"
+        else:
+            raise ValueError, "Unexpected responce"
 
 def msg_name( msg_id ):
+    """For debug only: returns name of the message"""
     try:
         return msg_name.id2name[ msg_id ]
     except AttributeError:
