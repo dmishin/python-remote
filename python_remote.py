@@ -281,6 +281,7 @@ class FarSide:
         self.objects = weakref.WeakValueDictionary() #Maps remoteID->local wrapper.
         self.file = None
         self.socket = None
+        self.msg_counter = 0
         
     def connect( self ):
         #create an INET, STREAMing socket
@@ -289,6 +290,8 @@ class FarSide:
         self.socket.connect( (self.host, self.port) )
         self.file = self.socket.makefile()
 
+    def get_msg_counter( self ):
+        return self.msg_counter
 
     def disconnect_objects( self ):
         """Disconnects all objects, assotiated with this farside"""
@@ -319,6 +322,7 @@ class FarSide:
     
     def _message( self, message ):
         """Send a message and read responce"""
+        self.msg_counter += 1
         pickle.dump( message, self.file )
         self.file.flush()
         return pickle.load( self.file )
