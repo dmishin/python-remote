@@ -1,5 +1,5 @@
 import socket
-import pickle
+import cPickle as pickle
 import threading
 import weakref
 import logging
@@ -25,9 +25,8 @@ class ClientThread( threading.Thread ):
 
     def run( self ):
         fl = self.socket.makefile()
-
         def respond( message ):
-            pickle.dump( message, fl )
+            pickle.dump( message, fl, pickle.HIGHEST_PROTOCOL )
             fl.flush()
 
         try:
@@ -302,7 +301,7 @@ class FarSide:
         
     def close( self ):
         if self.file:
-            pickle.dump( (MSG_BYE, ), self.file ) #Say bye to the server
+            pickle.dump( (MSG_BYE, ), self.file, pickle.HIGHEST_PROTOCOL ) #Say bye to the server
             self.file.close()
             self.file = None
         if self.socket:
@@ -325,9 +324,9 @@ class FarSide:
     def _message( self, message ):
         """Send a message and read responce"""
         self.msg_counter += 1
-        pickle.dump( message, self.file )
+        pickle.dump( message, self.file, pickle.HIGHEST_PROTOCOL )
         self.file.flush()
-        return pickle.load( self.file )
+        return pickle.load( self.file)
 
     def globals( self ):
         """Returns wrapped globals array"""
