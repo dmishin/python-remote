@@ -248,7 +248,8 @@ class RemoteObject:
     def __getattr__(self, name ):
         attr = self.far_side.get_attribute( self, name )
         #Caching of the special attributes to increase performance
-        if name.startswith("__") and name.endswith("__"):
+        #if name.startswith("__") and name.endswith("__"):
+        if self.far_side.cache_all_attributes:
             self.__dict__[ name ] = attr
         if isinstance( attr, RemoteObject ):
             attr.__dict__[ "_remote_name_" ] = self._remote_name_ + "." + name
@@ -275,14 +276,15 @@ class RemoteObject:
         self.__dict__[ "remote_id" ] = None #Mark object as disconnected.
 
 class FarSide:
-    def __init__(self, host, port ):
+    def __init__(self, host, port, cache_all_attributes=False ):
         self.host = host
         self.port = port
         self.objects = weakref.WeakValueDictionary() #Maps remoteID->local wrapper.
         self.file = None
         self.socket = None
         self.msg_counter = 0
-        
+        self.cache_all_attributes = cache_all_attributes
+
     def connect( self ):
         #create an INET, STREAMing socket
         self.socket = socket.socket(
