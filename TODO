@@ -1,0 +1,9 @@
+[ ] Support for the keyword arguments in call.
+   ? Create separate function for calling method with keyword arguments? Wrapping and unwrapping dictionaries can be slow
+[ ] Multithreading model:
+  Main thread maintains a queue of messages.
+  Server (separate thread) waits for connections and spawns service threads.
+  Service threads receive messages and put them into the queue in the main thread.
+  Main thread processes messages and puts them back to the server.
+  
+  Such mode would guarantee that all calls are perormed within the main Python thread.
