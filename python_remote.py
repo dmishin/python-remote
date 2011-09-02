@@ -18,72 +18,11 @@ class ProtocolException( Exception ):
     Usually caused either by the errors in the code, or by network errors"""
     pass
 
-class ServerThread( threading.Thread ):
-    def __init__( self, python_server, socket, address ):
-        threading.Thread.__init__( self )
-        self.socket = socket
-        self.python_server = python_server
-        self.address = address
-        self.handlers = {
-            MSG_GET_GLOBALS: python_server.on_get_globals,
-            MSG_GET_ATTRIBUTE: python_server.on_get_obj_attr,
-            MSG_CALL: python_server.on_call,
-            MSG_SET_ATTRIBUTE: python_server.on_set_attr,
-            MSG_IMPORT_MODULE: python_server.on_import_module,
-            MSG_RELEASE_OBJECT: python_server.on_release_object,
-            MSG_GET_ATTR_LIST: python_server.on_get_attr_list }
-
-    def run( self ):
-        """Main loop: receive messages and respond to them"""
-        fl = self.socket.makefile("rwb")
-        def respond( message ):
-            pickle.dump( message, fl, _protocol )
-            fl.flush()
-
-        try:
-            while True:
-                msg = pickle.load( fl )
-                assert (isinstance( msg, tuple ) )
-                msg_code = msg[0]
-
-                if msg_code == MSG_BYE:
-                    print "Close request"
-                    break
-
-                if msg_code == MSG_STOP_SERVER:
-                    respond( (RESP_SUCCESS, ) )
-                    fl.close()
-                    self.socket.close()
-                    self.python_server.stop_requested = True
-                    break
-
-                try:
-                    respond( self.handlers[ msg[0] ]( msg ) )
-                except KeyError, key:
-                    respond( (RESP_EXCEPT, ValueError( "Unknown message:%s"%key ) ) )
-                    print "Unknown message: %s"%key
-        except Exception, err:
-            print "Exception (%s) occurred while communicating with client: %s"%(type(err), err)
-
-        try:
-            fl.close()
-            self.socket.close()
-        except Exception,err:
-            print "Error closing file:%s"%err
-
-        self.socket = None
-        self.python_server = None
-
-class RemoteObjectWrapper:
-    """Wrapper, used at the client side to transfer information about the remote objects via connection"""
-    def __init__( self, remote_id ):
-        self.remote_id = remote_id
-    def __str__( self ):
-        return "REMOTE(%d)"%self.remote_id
-    def __repr__( self ):
-        return "REMOTE(%s)"%self.remote_id
-
+################################################################################
+#  Server-side classes
+################################################################################
 class PythonServer:
+    """Server"""
     def __init__( self, port, are_lists_local=False, multithread = False ):
         """Create python server on the specified port
         are_lists_local: When True, lists will be transferred to the client. Otherwise, they will be 'externalized'. 
@@ -114,7 +53,7 @@ class PythonServer:
             self.logger.info( "Accepted connection from: %s"%str( address ) )
             #now do something with the clientsocket
             #in this case, we'll pretend this is a threaded server
-            ct = ServerThread( self, clientsocket, address )
+            ct = ServerThread( self, clientsocket, address, self.logger ) #TODO: use child logger. (not available in python 25)
             if self.multithread:
                 st.start()
             else:
@@ -170,7 +109,6 @@ class PythonServer:
             return dict( map( self.unwrap_argument, value.items() ) )
         #TODO: process object attributes too?
         return value
-
 
     def on_get_globals( self, msg ):
         """Handler for the get_globals message. Returns wrapper for the globals map. Not really usable."""
@@ -257,48 +195,77 @@ class PythonServer:
         except KeyError:
             return (RESP_NOT_REGISTERED, obj_id)
 
-class ProxyObject:
-    def __init__(self, far_side, remote_id, name=None ):
-        """Wrapper, representing remote object"""
-        self.__dict__[ "far_side" ] = far_side
-        self.__dict__[ "_remote_id_"] = remote_id
-        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id)
+class ServerThread( threading.Thread ):
+    def __init__( self, python_server, socket, address, logger ):
+        threading.Thread.__init__( self )
+        self.socket = socket
+        self.python_server = python_server
+        self.address = address
+        self.logger = logger
+        self.handlers = {
+            MSG_GET_GLOBALS: python_server.on_get_globals,
+            MSG_GET_ATTRIBUTE: python_server.on_get_obj_attr,
+            MSG_CALL: python_server.on_call,
+            MSG_SET_ATTRIBUTE: python_server.on_set_attr,
+            MSG_IMPORT_MODULE: python_server.on_import_module,
+            MSG_RELEASE_OBJECT: python_server.on_release_object,
+            MSG_GET_ATTR_LIST: python_server.on_get_attr_list }
 
-    def __getattr__(self, name ):
-        #print "#Get:", self._remote_name_, name
-        attr = self.far_side.get_attribute( self, name )
-        #Caching of the special attributes to increase performance
-        #if name.startswith("__") and name.endswith("__"):
-        if self.far_side.cache_all_attributes:
-            self.__dict__[ name ] = attr
-        if isinstance( attr, ProxyObject ):
-            attr.__dict__[ "_remote_name_" ] = self._remote_name_ + "." + name
-        return attr
+    def run( self ):
+        """Main loop: receive messages and respond to them"""
+        fl = self.socket.makefile("rwb")
+        def respond( message ):
+            pickle.dump( message, fl, _protocol )
+            fl.flush()
 
-    def __setattr__(self, name, value ):
-        return self.far_side.set_attribute( self, name, value )
-
-    def __del__(self):
         try:
-            if self._remote_id_ != None: #If it is not disconnected object
-                self.far_side.release_object( self )
+            while True:
+                msg = pickle.load( fl )
+                assert (isinstance( msg, tuple ) )
+                msg_code = msg[0]
+
+                if msg_code == MSG_BYE:
+                    logger.info( "Close request received" )
+                    break
+
+                if msg_code == MSG_STOP_SERVER:
+                    respond( (RESP_SUCCESS, ) )
+                    fl.close()
+                    self.socket.close()
+                    self.python_server.stop_requested = True
+                    break
+
+                try:
+                    respond( self.handlers[ msg[0] ]( msg ) )
+                except KeyError, key:
+                    respond( (RESP_EXCEPT, ValueError( "Unknown message:%s"%key ) ) )
+                    logger.error( "Unknown message: %s"%key )
         except Exception, err:
-            print "Object %s (%d) can't be released: %s"%(self._remote_name_m, self._remote_id_, err)
+            logger.error( "Exception (%s) occurred while communicating with client: %s"%(type(err), err) )
 
-    def __call__(self, *args):
-        """For functions, performs call"""
-        #print "#CALL", self._remote_name_, args
-        return self.far_side.call_object( self, args )
+        try:
+            fl.close()
+            self.socket.close()
+        except Exception,err:
+            logger.error( "Error closing socket file:%s"%err )
 
-    def _release_remote_( self ):
-        """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
-        #print "invalidate:", self._remote_name_
-        self.far_side.release_object( self )
-        self.__dict__[ "_remote_id_" ] = None #Mark object as disconnected.
+        self.socket = None
+        self.python_server = None
 
+class RemoteObjectWrapper:
+    """Wrapper, used to transfer information about the remote objects via connection. Simply wraps the remote ID"""
+    def __init__( self, remote_id ):
+        self.remote_id = remote_id
+    def __str__( self ):
+        return "REMOTE(%d)"%self.remote_id
+    def __repr__( self ):
+        return "REMOTE(%s)"%self.remote_id
 
+################################################################################
+#  Client objects
+################################################################################
 class FarSide:
-    """Client object"""
+    """Client"""
     def __init__(self, host, port, cache_all_attributes=False, connect=True ):
         """Create client for access to the server-side objects"""
         self.host = host
@@ -330,18 +297,21 @@ class FarSide:
     def close( self ):
         if self.file:
             pickle.dump( (MSG_BYE, ), self.file, _protocol ) #Say bye to the server
-            self.file.close()
-            self.file = None
-            self.socket.close()
-            self.socket = None
+            self._disconnect()
         else:
             raise ValueError, "Client already closed connection!"
 
+    def _disconnect(self):
+        self.file.close()
+        self.file = None
+        self.socket.close()
+        self.socket = None
+        
     def stop_server( self ):
         """Closes connection and requests server to stop"""
         self.disconnect_objects()
         resp = self._message( (MSG_STOP_SERVER, ) )
-        self.close()
+        self._disconnect()
         
     def __del__(self):
         if self.file: #If not yet disconnected
@@ -349,7 +319,7 @@ class FarSide:
                 self.disconnect_objects() #Mark all objects, associated with this connection as invalid.
                 self.close()
             except Exception, err:
-                print "Warning: Error closing connection ignored: %s"%err
+                print "Warning: Exception occured when closing connection was ignored: %s"%err
     
     def _message( self, message ):
         """Send a message and read response"""
@@ -504,6 +474,48 @@ class FarSide:
         except IndexError:
             raise ProtocolException, "Wrong answer: %s"%(str(resp))
 
+class ProxyObject:
+    def __init__(self, far_side, remote_id, name=None ):
+        """Wrapper, representing remote object"""
+        self.__dict__[ "far_side" ] = far_side
+        self.__dict__[ "_remote_id_"] = remote_id
+        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id)
+
+    def __getattr__(self, name ):
+        #print "#Get:", self._remote_name_, name
+        attr = self.far_side.get_attribute( self, name )
+        #Caching of the special attributes to increase performance
+        #if name.startswith("__") and name.endswith("__"):
+        if self.far_side.cache_all_attributes:
+            self.__dict__[ name ] = attr
+        if isinstance( attr, ProxyObject ):
+            attr.__dict__[ "_remote_name_" ] = self._remote_name_ + "." + name
+        return attr
+
+    def __setattr__(self, name, value ):
+        return self.far_side.set_attribute( self, name, value )
+
+    def __del__(self):
+        try:
+            if self._remote_id_ != None: #If it is not disconnected object
+                self.far_side.release_object( self )
+        except Exception, err:
+            print "Object %s (%d) can't be released: %s"%(self._remote_name_m, self._remote_id_, err)
+
+    def __call__(self, *args):
+        """For functions, performs call"""
+        #print "#CALL", self._remote_name_, args
+        return self.far_side.call_object( self, args )
+
+    def _release_remote_( self ):
+        """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
+        #print "invalidate:", self._remote_name_
+        self.far_side.release_object( self )
+        self.__dict__[ "_remote_id_" ] = None #Mark object as disconnected.
+
+################################################################################
+# Other funcions and constants
+################################################################################
 def msg_name( msg_id ):
     """For debug only: returns name of the message"""
     try:
@@ -518,6 +530,10 @@ def msg_name( msg_id ):
         return msg_name( msg_id )
     except KeyError:
         return "UNKNOWN%d"%msg_id
+
+################################################################################
+# Protocol constants: message and responce formats (both are tuples)
+################################################################################
 
 MSG_GET_ATTRIBUTE = 0
 #>(msg, remote id, attr_name)
@@ -552,10 +568,10 @@ MSG_GET_ATTR_LIST = 6
 #<(resp-true, attr-list)
 #<(resp-false)
 
-MSG_STOP_SERVER = 7
+MSG_STOP_SERVER = 7 #Client requested sever close
 MSG_BYE = -1 #Said by the client, before quit
 
-
+#Responce codes
 RESP_SUCCESS = 0
 RESP_EXCEPT = 1 #partial_success
 RESP_NOT_REGISTERED = 2 #object not registered
