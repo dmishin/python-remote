@@ -1,0 +1,41 @@
+Simple RPC client/server in pure python, allowing transparent access to the remote objects.
+
+Developed and tested in Python 2.5 and 2.7.
+
+What is it:
+   1) Take some application, supporting Python (such as Golly).
+   2) In that application, create and run the RPC server from this script (PythonServer class)
+   3) Now in the regular Pyhton script, you can do the following:
+      #Create client
+      client = FarSide( ... some appropriate parameters here ... )
+      #Import module, available only at the server
+      remote_golly = client.import_module( "golly" )  
+      #call any method of theremote module.
+      remote_golly.message( "Hello" )
+      
+   All calls to the remote objects are serialized, sent to the sever via socket, then executed on the server, and results are received on the client. Everything is done absolutely transparently, client can work ith remote objects in the absolutely same way as if they were available locally.
+
+   Not only modules can be remoted: any object can be (remember, that functions, methods etc are also objects in Python).
+
+   If you have a remote function, that expects a remote object as argument, you can call this function without any additional work. 
+
+
+Possible usages:
+  - Integration of many Python-enabled applications in one script.
+  - Centralized testing of the applications, providing Python interface.
+
+Drawbacks:
+  It is slow. Each call to the remote method involves serialization (with pickle), transfer via socket and deserialization.
+
+
+
+Classes:
+
+   PythonServer - server object. SHould be created in the application.
+   FarSide - client object. Gives transparent access to the objects, exposed to the server.
+
+
+Files:
+   python_remote.py - the library itself.
+   pysock_server.py - sample server code.
+   pysock_client.py - sample client code.

@@ -1,4 +1,4 @@
-[ ] Support for the keyword arguments in call.
+[ ] Support for the keyword arguments in the calls.
    ? Create separate function for calling method with keyword arguments? Wrapping and unwrapping dictionaries can be slow
 [ ] Multithreading model:
   Main thread maintains a queue of messages.
