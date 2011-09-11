@@ -10,7 +10,7 @@ class UnknownObjectError( Exception ):
 
 class ProtocolException( Exception ):
     """Raised, when unexpected or incorrect message received by client or by server.
-    Usually caused either by the errors i nthe code, or by network errors"""
+    Usually caused either by the errors in the code, or by network errors"""
     pass
 
 class ServerThread( threading.Thread ):
