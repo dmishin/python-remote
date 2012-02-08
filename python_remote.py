@@ -73,23 +73,26 @@ class PythonServer:
 
     def wrap_returned( self, value ):
         """Called by the server, to prepare returned value for transfer"""
-        if value == None or \
-                isinstance( value, SIMPLE_TYPES ):
-            return value
-        elif isinstance( value, tuple ):
-            return tuple(map( self.wrap_returned, value) )
-        elif self.will_wrap_lists and isinstance( value, list ):
-            #It is generally unsafe, because far-side modifications of the list 
-            #will not be visible on the near-side. However, it can speed-up many applications significantly
-            return map( self.wrap_returned, value )
-        else:
-            #impossible to transfer: transfer as external object
-            return RemoteObjectWrapper( self.register_object( value ) )
+        def do_wrap( value ):
+            if value == None or \
+                    isinstance( value, SIMPLE_TYPES ):
+                return value
+            elif isinstance( value, tuple ):
+                return tuple(map( do_wrap, value) )
+            elif self.will_wrap_lists and isinstance( value, list ):
+                #It is generally unsafe, because far-side modifications of the list 
+                #will not be visible on the near-side. However, it can speed-up many applications significantly
+                return map( do_wrap, value )
+            else:
+                #impossible to transfer: transfer as external object
+                return RemoteObjectWrapper( self.register_object( value ) )
+        return do_wrap(value)
 
     def unwrap_argument( self, value ):
         """Wrap values before calling remote method
         Called by the server, to unwrap arguments, passed from the client
         """
+        
         #EMpty tuple is a very common case: check it first to improve performance
         if value == () or value == None \
                 or isinstance( value, (int, bool, str, long, float, unicode) ):
@@ -136,11 +139,9 @@ class PythonServer:
     def on_call( self, msg ):
         """Called object as function"""
         msg_id, obj_id, args = msg
-#        print( "###CALL: %s %s"%( obj_id, args ) )
         args = self.unwrap_argument( args )
         try:
             obj = self.objects[ obj_id ]
-            #self.logger.debug( "###OBJ: %s"%obj )
             try:
                 res = self.wrap_returned( obj( *args ) )
                 return (RESP_SUCCESS, res)
@@ -360,25 +361,27 @@ class FarSide:
         """Wrap values before calling remote method
         Called by the client, to prepare method arguments before call
         """
-        #Empty tuple is a very common case: check it first to improve performance
-        if isinstance( value, ProxyObject ): #ProxyObject check must go first - or else comparisions will cause clinch.
-            return RemoteObjectWrapper( value._remote_id_ )
-        # empty tuple is very common case, check for it separately
-        if ()==value or value is None \
-                or isinstance( value, SIMPLE_TYPES ):
-            return value 
-        if isinstance( value, tuple ):
-            return tuple( map( self.wrap_argument, value ) )
-        #Unsafe conversions
-        #print "Warning: Argument can not be converted safely"
-        if isinstance( value, list ):
-            return map( self.wrap_argument, value )
-        if isinstance( value, set ):
-            return set( map( self.wrap_argument, value ) )
-        if isinstance( value, dict ):
-            return dict( map( self.wrap_argument, value.items() ) )
-        #TODO: process object attributes too?
-        return value
+        def do_wrap( value ):
+            #Empty tuple is a very common case: check it first to improve performance
+            if isinstance( value, ProxyObject ): #ProxyObject check must go first - or else comparisions will cause clinch.
+                return RemoteObjectWrapper( value._remote_id_ )
+            # empty tuple is very common case, check for it separately
+            if ()==value or value is None \
+                    or isinstance( value, SIMPLE_TYPES ):
+                return value 
+            if isinstance( value, tuple ):
+                return tuple( map( do_wrap, value ) )
+            #Unsafe conversions
+            #print "Warning: Argument can not be converted safely"
+            if isinstance( value, list ):
+                return map( do_wrap, value )
+            if isinstance( value, set ):
+                return set( map( do_wrap, value ) )
+            if isinstance( value, dict ):
+                return dict( map( do_wrap, value.items() ) )
+            #TODO: process object attributes too?
+            return value
+        return do_wrap(value)
 
     def release_object( self, obj_wrapper ):
         """Releases a remote object"""
@@ -505,17 +508,17 @@ class ProxyObject:
 
     def __del__(self):
         try:
-            if self._disconnected_(): #If it is not disconnected object
+            if not self._disconnected_(): #If it is not disconnected object
                 self.far_side.release_object( self )
         except Exception, err:
-            print "Failed to release object %s (%d): %s"%(self._remote_name_m, self._remote_id_, err)
+            print "Failed to release object %s (%s): %s"%(self._remote_name_, self._remote_id_, err)
 
     def __call__(self, *args):
         """For functions, performs call"""
         return self.far_side.call_object( self, args )
 
     def _disconnected_(self):
-        return self._remote_name_ is None
+        return self._remote_id_ is None
 
     def _release_remote_( self ):
         """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
