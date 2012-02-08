@@ -214,6 +214,7 @@ class ServerThread( threading.Thread ):
     def run( self ):
         """Main loop: receive messages and respond to them"""
         fl = self.socket.makefile("rwb")
+        logger = self.logger
         def respond( message ):
             pickle.dump( message, fl, _protocol )
             fl.flush()
@@ -296,6 +297,7 @@ class FarSide:
         
     def close( self ):
         if self.file:
+            self.disconnect_objects()
             pickle.dump( (MSG_BYE, ), self.file, _protocol ) #Say bye to the server
             self._disconnect()
         else:
@@ -327,8 +329,8 @@ class FarSide:
         pickle.dump( message, self.file, _protocol )
         self.file.flush()
         resp = pickle.load( self.file )
-        #print "#>>", message
-        #print "#<<", resp
+#        print "#>>", message
+#        print "#<<", resp
         return resp
 
     def globals( self ):
@@ -511,6 +513,7 @@ class ProxyObject:
         """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
         #print "invalidate:", self._remote_name_
         self.far_side.release_object( self )
+#        print "#### Release", self._remote_id_
         self.__dict__[ "_remote_id_" ] = None #Mark object as disconnected.
 
 ################################################################################
