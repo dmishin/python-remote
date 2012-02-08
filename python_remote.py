@@ -9,6 +9,11 @@ _protocol = pickle.HIGHEST_PROTOCOL #Use the highest available pickle protocol.
 #import pickle #These are failsafe options
 #_protocol = 0
 
+dump = pickle.dump
+load = pickle.load
+
+SIMPLE_TYPES = (int, bool, str, long, float, unicode)
+
 class UnknownObjectError( Exception ):
     """Error, raised when client requested an object, that is not known at the server side"""
     pass
@@ -18,34 +23,6 @@ class ProtocolException( Exception ):
     Usually caused either by the errors in the code, or by network errors"""
     pass
 
-def print_args( prompt, skip=1 ):
-    def decorator( func ):
-        def decorated( *args, **kwargs ):
-            print prompt, map(saferepr, args[skip:])
-            return func( *args, **kwargs )
-        return decorated
-    return decorator
-
-def print_ret( prompt ):
-    def decorator( func ):
-        def decorated( *args, **kwargs ):
-            rval = func( *args, **kwargs )
-            print prompt, rval
-            return rval
-        return decorated
-    return decorator
-
-def saferepr( x ):
-    if isinstance(x, ProxyObject):
-        return "PROXY(%s)"%x._remote_id_
-    if x == None: return x
-    if isinstance(x, (bool, int, long, str, unicode)): return repr(x)
-    if isinstance(x, tuple):
-        return tuple(map(saferepr,x))
-    if isinstance(x, list):
-        return map(saferepr, x)
-    return repr(x)
-        
 ################################################################################
 #  Server-side classes
 ################################################################################
@@ -97,7 +74,7 @@ class PythonServer:
     def wrap_returned( self, value ):
         """Called by the server, to prepare returned value for transfer"""
         if value == None or \
-                isinstance( value, (int, bool, str, long, float, unicode) ):
+                isinstance( value, SIMPLE_TYPES ):
             return value
         elif isinstance( value, tuple ):
             return tuple(map( self.wrap_returned, value) )
@@ -170,7 +147,7 @@ class PythonServer:
             except AttributeError, err:
                 return (RESP_NO_SUCH_ATTR, "__call__" )
             except Exception, err:
-                #Remote exception - its OK
+                #Remote exception - it's OK, just tell about th exception to the client
                 return (RESP_EXCEPT, err)
         except KeyError, err:
             self.logger.error( "Error! No object %s"%obj_id )
@@ -244,12 +221,12 @@ class ServerThread( threading.Thread ):
         fl = self.socket.makefile("rwb")
         logger = self.logger
         def respond( message ):
-            pickle.dump( message, fl, _protocol )
+            dump( message, fl, _protocol )
             fl.flush()
 
         try:
             while True:
-                msg = pickle.load( fl )
+                msg = load( fl )
                 assert (isinstance( msg, tuple ) )
                 msg_code = msg[0]
 
@@ -326,7 +303,7 @@ class FarSide:
     def close( self ):
         if self.file:
             self.disconnect_objects()
-            pickle.dump( (MSG_BYE, ), self.file, _protocol ) #Say bye to the server
+            dump( (MSG_BYE, ), self.file, _protocol ) #Say bye to the server
             self._disconnect()
         else:
             raise ValueError, "Client already closed connection!"
@@ -354,9 +331,9 @@ class FarSide:
     def _message( self, message ):
         """Send a message and read response"""
         self.msg_counter += 1
-        pickle.dump( message, self.file, _protocol )
+        dump( message, self.file, _protocol )
         self.file.flush()
-        resp = pickle.load( self.file )
+        resp = load( self.file )
 #        print "#>>", message
 #        print "#<<", resp
         return resp
@@ -368,8 +345,7 @@ class FarSide:
 
     def unwrap_returned( self, value ):
         """Called by the client to unwrap value, returned from the server"""
-        if value == None \
-                or isinstance( value, (int, bool, str, long, float, unicode) ):
+        if value is None or isinstance( value, SIMPLE_TYPES ):
             return value 
         if isinstance( value, tuple ):
             return tuple( map( self.unwrap_returned, value ) )
@@ -384,11 +360,12 @@ class FarSide:
         """Wrap values before calling remote method
         Called by the client, to prepare method arguments before call
         """
-        #EMpty tuple is a very common case: check it first to improve performance
-        if isinstance( value, ProxyObject ): #Proxy check must go first - or else comparisions will cause problem.
+        #Empty tuple is a very common case: check it first to improve performance
+        if isinstance( value, ProxyObject ): #ProxyObject check must go first - or else comparisions will cause clinch.
             return RemoteObjectWrapper( value._remote_id_ )
-        if value ==() or value is None \
-                or isinstance( value, (int, bool, str, long, float, unicode) ):
+        # empty tuple is very common case, check for it separately
+        if ()==value or value is None \
+                or isinstance( value, SIMPLE_TYPES ):
             return value 
         if isinstance( value, tuple ):
             return tuple( map( self.wrap_argument, value ) )
@@ -482,7 +459,7 @@ class FarSide:
             raise ProtocolException, "Unexpected response:%s"%(str(resp))
 
     def call_object( self, remote_obj, args ):
-        """Calls remote object"""
+        """Calls remote object as function"""
         assert( isinstance( remote_obj, ProxyObject) )
         assert( remote_obj._remote_id_ in self.objects )
         args = self.wrap_argument( args )
@@ -507,9 +484,10 @@ class FarSide:
 class ProxyObject:
     def __init__(self, far_side, remote_id, name=None ):
         """Wrapper, representing remote object"""
-        self.__dict__[ "far_side" ] = far_side
-        self.__dict__[ "_remote_id_"] = remote_id
-        self.__dict__[ "_remote_name_" ] = name or "<%s>"%(remote_id)
+        attrs = self.__dict__
+        attrs[ "far_side" ] = far_side
+        attrs[ "_remote_id_"] = remote_id
+        attrs[ "_remote_name_" ] = name or "<%s>"%(remote_id)
 
     def __getattr__(self, name ):
         #print "#Get:", self._remote_name_, name
@@ -527,21 +505,22 @@ class ProxyObject:
 
     def __del__(self):
         try:
-            if self._remote_id_ != None: #If it is not disconnected object
+            if self._disconnected_(): #If it is not disconnected object
                 self.far_side.release_object( self )
         except Exception, err:
-            print "Object %s (%d) can't be released: %s"%(self._remote_name_m, self._remote_id_, err)
+            print "Failed to release object %s (%d): %s"%(self._remote_name_m, self._remote_id_, err)
 
     def __call__(self, *args):
         """For functions, performs call"""
-#        print "#CALL", self._remote_name_#, args
         return self.far_side.call_object( self, args )
+
+    def _disconnected_(self):
+        return self._remote_name_ is None
 
     def _release_remote_( self ):
         """Disconnect object from it's remote counterpart. Object becomes unusable after this."""
         #print "invalidate:", self._remote_name_
         self.far_side.release_object( self )
-#        print "#### Release", self._remote_id_
         self.__dict__[ "_remote_id_" ] = None #Mark object as disconnected.
 
 ################################################################################
@@ -562,6 +541,35 @@ def msg_name( msg_id ):
     except KeyError:
         return "UNKNOWN%d"%msg_id
 
+def print_args( prompt, skip=1 ):
+    def decorator( func ):
+        def decorated( *args, **kwargs ):
+            print prompt, map(saferepr, args[skip:])
+            return func( *args, **kwargs )
+        return decorated
+    return decorator
+
+def print_ret( prompt ):
+    """Decorator that prints returned value"""
+    def decorator( func ):
+        def decorated( *args, **kwargs ):
+            rval = func( *args, **kwargs )
+            print prompt, rval
+            return rval
+        return decorated
+    return decorator
+
+def saferepr( x ):
+    if isinstance(x, ProxyObject):
+        return "PROXY(%s)"%x._remote_id_
+    if x == None: return x
+    if isinstance(x, (bool, int, long, str, unicode)): return repr(x)
+    if isinstance(x, tuple):
+        return tuple(map(saferepr,x))
+    if isinstance(x, list):
+        return map(saferepr, x)
+    return repr(x)
+        
 ################################################################################
 # Protocol constants: message and responce formats (both are tuples)
 ################################################################################

@@ -7,3 +7,14 @@
   Main thread processes messages and puts them back to the server.
   
   Such mode would guarantee that all calls are perormed within the main Python thread.
+[ ] Safe marshalling of the remote exceptions:
+  Now exceptions are transmitted as-is, without any kind of wrapping
+  This can cause problem, if exception object is not trivial.
+  Better solution is to use special approach for exception transfer:
+  first serialize it to string, and if failed - serialize as "UntranslatableException"
+
+[ ] Pluggable codecs:
+  instead of pickel anc cPickle, make othe codecs possible:
+   - XML
+   - JSON
+   - something else?
