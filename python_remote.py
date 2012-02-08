@@ -18,6 +18,34 @@ class ProtocolException( Exception ):
     Usually caused either by the errors in the code, or by network errors"""
     pass
 
+def print_args( prompt, skip=1 ):
+    def decorator( func ):
+        def decorated( *args, **kwargs ):
+            print prompt, map(saferepr, args[skip:])
+            return func( *args, **kwargs )
+        return decorated
+    return decorator
+
+def print_ret( prompt ):
+    def decorator( func ):
+        def decorated( *args, **kwargs ):
+            rval = func( *args, **kwargs )
+            print prompt, rval
+            return rval
+        return decorated
+    return decorator
+
+def saferepr( x ):
+    if isinstance(x, ProxyObject):
+        return "PROXY(%s)"%x._remote_id_
+    if x == None: return x
+    if isinstance(x, (bool, int, long, str, unicode)): return repr(x)
+    if isinstance(x, tuple):
+        return tuple(map(saferepr,x))
+    if isinstance(x, list):
+        return map(saferepr, x)
+    return repr(x)
+        
 ################################################################################
 #  Server-side classes
 ################################################################################
@@ -357,13 +385,13 @@ class FarSide:
         Called by the client, to prepare method arguments before call
         """
         #EMpty tuple is a very common case: check it first to improve performance
-        if value == () or value == None \
+        if isinstance( value, ProxyObject ): #Proxy check must go first - or else comparisions will cause problem.
+            return RemoteObjectWrapper( value._remote_id_ )
+        if value ==() or value is None \
                 or isinstance( value, (int, bool, str, long, float, unicode) ):
             return value 
         if isinstance( value, tuple ):
             return tuple( map( self.wrap_argument, value ) )
-        if isinstance( value, ProxyObject ):
-            return RemoteObjectWrapper( value._remote_id_ )
         #Unsafe conversions
         #print "Warning: Argument can not be converted safely"
         if isinstance( value, list ):
@@ -506,7 +534,7 @@ class ProxyObject:
 
     def __call__(self, *args):
         """For functions, performs call"""
-        #print "#CALL", self._remote_name_, args
+#        print "#CALL", self._remote_name_#, args
         return self.far_side.call_object( self, args )
 
     def _release_remote_( self ):
