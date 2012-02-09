@@ -5,6 +5,7 @@ import logging
 import sys
 
 import cPickle as pickle #Use faster realization of the pickle algorithm.
+#import simple_pickle as pickle
 _protocol = pickle.HIGHEST_PROTOCOL #Use the highest available pickle protocol.
 #import pickle #These are failsafe options
 #_protocol = 0
