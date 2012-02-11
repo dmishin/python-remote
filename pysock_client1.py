@@ -16,11 +16,10 @@ rbi = remote.import_module( "__builtin__" )
 try:
     print rmath.sin( 1.0 )
     print float(rmath.pi)
-
-    rmath = None
-
+    #Use "map" function from the remote side to map remose "sin" over list of values
     print rbi.map( rmath.sin, [1,2] )
 
+    rmath = None
 except KeyError, err:
     print "No key:", err
 except AttributeError, err:

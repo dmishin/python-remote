@@ -1,11 +1,11 @@
 import python_remote
 import socket
-port = 8889
+port = 8888
 host = socket.gethostname()
 
 print "Connecting to the remote python"
 remote = python_remote.FarSide( host, port )
-print "Connection done"
+print "Connected"
 
 
 remote.stop_server()
