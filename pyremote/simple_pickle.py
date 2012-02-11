@@ -1,7 +1,7 @@
 #Serialization of some standard python objects
 from struct import pack, unpack
 from StringIO import StringIO
-from python_remote import RemoteObjectWrapper
+from core import RemoteObjectWrapper
 
 TAG_NONE = "n"
 TAG_BOOL = "b"
