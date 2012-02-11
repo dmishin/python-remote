@@ -1,4 +1,4 @@
-import python_remote
+from pyremote.client import FarSide
 import socket
 import traceback
 
@@ -7,7 +7,7 @@ host = socket.gethostname()
 print "Connecting to %s:%d"%(host, port)
 
 print "Connecting to the remote python"
-remote = python_remote.FarSide( host, port )
+remote = FarSide( host, port )
 print "Connection done"
 
 rmath = remote.import_module( "math" )

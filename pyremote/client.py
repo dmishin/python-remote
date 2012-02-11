@@ -1,3 +1,7 @@
+import socket
+import weakref
+from core import *
+
 from core import *
 ################################################################################
 #  Client objects
@@ -35,7 +39,7 @@ class FarSide:
     def close( self ):
         if self.file:
             self.disconnect_objects()
-            dump( (MSG_BYE, ), self.file, _protocol ) #Say bye to the server
+            dump( (MSG_BYE, ), self.file, protocol ) #Say bye to the server
             self._disconnect()
         else:
             raise ValueError, "Client already closed connection!"
@@ -63,7 +67,7 @@ class FarSide:
     def _message( self, message ):
         """Send a message and read response"""
         self.msg_counter += 1
-        dump( message, self.file, _protocol )
+        dump( message, self.file, protocol )
         self.file.flush()
         resp = load( self.file )
 #        print "#>>", message

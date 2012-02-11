@@ -1,10 +1,10 @@
-import python_remote
+from pyremote.client import FarSide
 import socket
 port = 8888
 host = socket.gethostname()
 
 print "Connecting to the remote python"
-remote = python_remote.FarSide( host, port )
+remote = FarSide( host, port )
 print "Connected"
 
 

@@ -1,20 +1,7 @@
 import socket
 import threading
-import weakref
 import logging
-import sys
 from core import *
-
-import cPickle as pickle #Use faster realization of the pickle algorithm.
-#import simple_pickle as pickle
-_protocol = pickle.HIGHEST_PROTOCOL #Use the highest available pickle protocol.
-#import pickle #These are failsafe options
-#_protocol = 0
-
-dump = pickle.dump
-load = pickle.load
-
-SIMPLE_TYPES = (int, bool, str, long, float, unicode)
 
 
 class PythonServer:
@@ -213,7 +200,7 @@ class ServerThread( threading.Thread ):
         fl = self.socket.makefile("rwb")
         logger = self.logger
         def respond( message ):
-            dump( message, fl, _protocol )
+            dump( message, fl, protocol )
             fl.flush()
 
         try:

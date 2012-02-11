@@ -1,9 +1,9 @@
-import python_remote
+from pyremote.server import PythonServer
 import logging 
-port = 8889
+port = 8888
 
 logging.basicConfig(level = logging.INFO)
-server = python_remote.PythonServer( port )
+server = PythonServer( port )
 print "Running server at the port %d"%port
 server.start()
 print "Server closed"
